@@ -1,0 +1,338 @@
+#!/usr/bin/python3
+"""
+VLLM Helm Deployment Manager
+
+A command-line tool for managing VLLM deployments using Helm charts.
+Supports installation, upgrades, uninstalls, and listing of deployments.
+"""
+
+import sys
+import subprocess
+import argparse
+import json
+import base64
+import yaml
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
+
+@dataclass
+class ResourceConfig:
+    """Container resource configuration"""
+    cpu_limit: Optional[str] = None
+    memory_limit: Optional[str] = None
+    cpu_request: Optional[str] = None
+    memory_request: Optional[str] = None
+
+
+@dataclass
+class GPUConfig:
+    """GPU configuration"""
+    count: Optional[int] = None
+    type: Optional[str] = None
+
+
+@dataclass
+class ModelConfig:
+    """Model configuration"""
+    path: str
+    name: Optional[str] = None
+    args: Optional[str] = None
+
+
+@dataclass
+class DeploymentConfig:
+    """Complete deployment configuration"""
+    model: ModelConfig
+    replica_count: Optional[int] = None
+    image_name: Optional[str] = None
+    image_version: Optional[str] = None
+    gpu: Optional[GPUConfig] = None
+    resources: Optional[ResourceConfig] = None
+    shared_memory: Optional[str] = None
+    namespace: str = "vllm-services"
+
+
+class HelmManager:
+    """Manages Helm operations for VLLM deployments"""
+    
+    CHART_PATH = "./charts/vllm"
+    RELEASE_PREFIX = "vllm--"
+    
+    def __init__(self, dry_run: bool = False, debug: bool = False):
+        self.dry_run = dry_run
+        self.debug = debug
+    
+    @staticmethod
+    def calc_release_name(model_path: str) -> str:
+        """Calculate Helm release name from model path"""
+        # Convert path to a safe release name
+        # Replace path separators and special chars with dashes
+        slug = model_path.lower().replace('/', '--').replace('.', '-').replace('_', '-')
+        # Remove leading dashes from relative paths like ./my-model
+        slug = slug.lstrip('-')
+        return f"{HelmManager.RELEASE_PREFIX}{slug}"
+    
+    def run_helm_command(self, cmd: List[str]) -> str:
+        """Execute a Helm command and return output"""
+        print(f"Running: {' '.join(cmd)}", file=sys.stderr)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Command failed (exit {result.returncode}): {result.stderr}", file=sys.stderr)
+            sys.exit(result.returncode)
+        
+        print(result.stdout)
+        return result.stdout
+    
+    def fetch_current_values(self, release: str, namespace: str) -> Dict[str, Any]:
+        """Fetch current Helm values for a release"""
+        cmd = [
+            'helm', 'get', 'values', release,
+            f'--namespace={namespace}', '-o', 'yaml'
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Error fetching current values: {result.stderr}", file=sys.stderr)
+            sys.exit(result.returncode)
+        
+        return yaml.safe_load(result.stdout) or {}
+    
+    def build_helm_flags(self, config: DeploymentConfig, extra_args: List[str]) -> List[str]:
+        """Build Helm --set flags from configuration"""
+        flags = []
+        
+        # Build value mappings
+        value_map = {
+            'replicaCount': config.replica_count,
+            'imageName': config.image_name,
+            'imageVersion': config.image_version,
+            'model.path': config.model.path,
+            'model.name': config.model.name,
+            'sharedMemory': config.shared_memory,
+        }
+        
+        # Add GPU config if present
+        if config.gpu:
+            value_map.update({
+                'gpu.count': config.gpu.count,
+                'gpu.type': config.gpu.type,
+            })
+        
+        # Add resource config if present
+        if config.resources:
+            value_map.update({
+                'resources.limits.cpu': config.resources.cpu_limit,
+                'resources.limits.memory': config.resources.memory_limit,
+                'resources.requests.cpu': config.resources.cpu_request,
+                'resources.requests.memory': config.resources.memory_request,
+            })
+        
+        # Convert to --set flags
+        for key, value in value_map.items():
+            if value is not None:
+                literal = f"{value}"
+                flags.extend(["--set", f"{key}={literal}"])
+        
+        # Handle model arguments
+        model_args = []
+        if config.model.args:
+            model_args.extend(config.model.args.split())
+        if extra_args:
+            model_args.extend(extra_args)
+        
+        if model_args:
+            args_json = json.dumps(model_args)
+            args_b64 = base64.b64encode(args_json.encode()).decode()
+            flags.extend(["--set", f"model.args={args_b64}"])
+        
+        return flags
+    
+    def build_helm_command(self, action: str, release: str, namespace: str, flags: List[str]) -> List[str]:
+        """Build complete Helm command"""
+        cmd = ['helm', action]
+        
+        if self.dry_run:
+            cmd.append('--dry-run')
+        if self.debug:
+            cmd.append('--debug')
+        
+        cmd.extend([release, self.CHART_PATH, f'--namespace={namespace}'])
+        cmd.extend(flags)
+        print(cmd)
+        return cmd
+    
+    def install(self, config: DeploymentConfig, extra_args: List[str]):
+        """Install a new VLLM deployment"""
+        release = self.calc_release_name(config.model.path)
+        flags = self.build_helm_flags(config, extra_args)
+        cmd = self.build_helm_command('install', release, config.namespace, flags)
+        self.run_helm_command(cmd)
+    
+    def upgrade(self, config: DeploymentConfig, extra_args: List[str]):
+        """Upgrade an existing VLLM deployment"""
+        release = self.calc_release_name(config.model.path)
+        
+        # Fetch current values for defaults
+        current = self.fetch_current_values(release, config.namespace)
+        
+        # Fill in missing values from current deployment
+        if config.replica_count is None:
+            config.replica_count = current.get('replicaCount')
+        
+        if config.gpu and config.gpu.count is None:
+            config.gpu.count = current.get('gpu', {}).get('count')
+        
+        if config.gpu and config.gpu.type is None:
+            config.gpu.type = current.get('gpu', {}).get('type')
+        
+        # Add similar logic for other fields as needed
+        
+        flags = self.build_helm_flags(config, extra_args)
+        cmd = self.build_helm_command('upgrade', release, config.namespace, flags)
+        self.run_helm_command(cmd)
+    
+    def uninstall(self, model_path: str, namespace: str):
+        """Uninstall a VLLM deployment"""
+        release = self.calc_release_name(model_path)
+        cmd = ['helm', 'uninstall', release, f'--namespace={namespace}']
+        self.run_helm_command(cmd)
+    
+    def list_deployments(self, namespace: str):
+        """List all VLLM deployments"""
+        cmd = ['helm', 'list', f'--namespace={namespace}', '--filter', self.RELEASE_PREFIX]
+        self.run_helm_command(cmd)
+
+
+def create_config_from_args(args, extra_args: List[str]) -> DeploymentConfig:
+    """Create deployment configuration from parsed arguments"""
+    model = ModelConfig(
+        path=args.modelPath,
+        name=getattr(args, 'modelName', None),
+        args=getattr(args, 'modelArgs', None)
+    )
+    
+    gpu = None
+    if hasattr(args, 'gpuCount') or hasattr(args, 'gpuType'):
+        gpu = GPUConfig(
+            count=getattr(args, 'gpuCount', None),
+            type=getattr(args, 'gpuType', None)
+        )
+    
+    resources = None
+    if any(hasattr(args, attr) for attr in ['cpuLimit', 'memoryLimit', 'cpuRequest', 'memoryRequest']):
+        resources = ResourceConfig(
+            cpu_limit=getattr(args, 'cpuLimit', None),
+            memory_limit=getattr(args, 'memoryLimit', None),
+            cpu_request=getattr(args, 'cpuRequest', None),
+            memory_request=getattr(args, 'memoryRequest', None)
+        )
+    
+    return DeploymentConfig(
+        model=model,
+        replica_count=getattr(args, 'replicaCount', None),
+        image_name=getattr(args, 'imageName', None),
+        image_version=getattr(args, 'imageVersion', None),
+        gpu=gpu,
+        resources=resources,
+        shared_memory=getattr(args, 'sharedMemory', None),
+        namespace=args.namespace
+    )
+
+
+def setup_argument_parser() -> argparse.ArgumentParser:
+    """Setup and return the argument parser"""
+    parser = argparse.ArgumentParser(
+        prog='mlrun',
+        description='Manage VLLM Helm deployments',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  mlrun Qwen/Qwen3-32B up --gpuCount 2
+  mlrun ./my-qwen/qwen-32 up --gpuCount 1  
+  mlrun ./models/llama-7b modify --replicaCount 3
+  mlrun Qwen/Qwen3-32B down
+  mlrun ls
+        """
+    )
+    
+    parser.add_argument('modelPath', nargs='?', help='Model path, e.g. Qwen/Qwen3-32B or ./my-qwen/qwen-32')
+    parser.add_argument('--namespace', default='vllm-services', help='Kubernetes namespace')
+    parser.add_argument('--dry-run', action='store_true', help='Show what would be done without executing')
+    parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    
+    subparsers = parser.add_subparsers(dest='command', required=True, help='Available commands')
+    
+    DEFAULT_IMAGE="docker.io/vllm/vllm-openai:latest"
+
+    # Common arguments for deployment commands
+    def add_deployment_args(subparser):
+        subparser.add_argument('-n', '--replicaCount', type=int, help='Number of replicas')
+        subparser.add_argument('-g', '--gpuCount', type=int, help='Number of GPUs')
+        subparser.add_argument('--gpuType', default='amd.com/gpu', help='GPU type')
+        subparser.add_argument('--imageName', default=DEFAULT_IMAGE, help='Container image name')
+        subparser.add_argument('--imageVersion', default='latest', help='Container image version')
+        subparser.add_argument('--modelName', default='', help='Model name override')
+        subparser.add_argument('--modelArgs', default='', help='Additional model arguments')
+        subparser.add_argument('--sharedMemory', default='1Gi', help='Shared memory size')
+        subparser.add_argument('--cpuLimit', default='1', help='CPU limit')
+        subparser.add_argument('--memoryLimit', default='2Gi', help='Memory limit')
+        subparser.add_argument('--cpuRequest', default='2', help='CPU request')
+        subparser.add_argument('--memoryRequest', default='32Gi', help='Memory request')
+    
+    # Up command
+    up_parser = subparsers.add_parser('up', help='Install a new deployment')
+    add_deployment_args(up_parser)
+    # Set defaults for up command
+    up_parser.set_defaults(replicaCount=1, gpuCount=0)
+    
+    # Modify command
+    mod_parser = subparsers.add_parser('modify', help='Modify an existing deployment')
+    add_deployment_args(mod_parser)
+    # No defaults for modify - use existing values
+    
+    # Down command
+    subparsers.add_parser('down', help='Uninstall a deployment')
+    
+    # List command
+    subparsers.add_parser('ls', help='List deployments')
+    
+    return parser
+
+
+def main():
+    """Main entry point"""
+    parser = setup_argument_parser()
+    args, extra = parser.parse_known_args()
+    
+    # Validate modelPath for commands that need it
+    if args.command in ['up', 'modify', 'down'] and not args.modelPath:
+        parser.error(f"modelPath is required for '{args.command}' command")
+    
+    helm = HelmManager(dry_run=args.dry_run, debug=args.debug)
+    
+    try:
+        if args.command == 'up':
+            config = create_config_from_args(args, extra)
+            helm.install(config, extra)
+        
+        elif args.command == 'modify':
+            config = create_config_from_args(args, extra)
+            helm.upgrade(config, extra)
+        
+        elif args.command == 'down':
+            helm.uninstall(args.modelPath, args.namespace)
+        
+        elif args.command == 'ls':
+            helm.list_deployments(args.namespace)
+    
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

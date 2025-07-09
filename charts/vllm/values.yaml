@@ -1,0 +1,26 @@
+# values.yaml
+namespace: vllm-services       # Kubernetes namespace
+replicaCount: 1               # number of VLLM pods
+
+imageName: docker.io/vllm/vllm-openai:latest
+imageVersion: v0.9.1.post1
+
+gpu:
+  type: amd.com/gpu
+  count: 8
+
+model:
+  path: Qwen/Qwen3-32B
+  name: ""                    # optional model name override
+  args: ''                     # additional vllm arguments
+
+# shared memory size for /dev/shm
+sharedMemory: 24Gi
+
+resources:
+  limits:
+    cpu: 12
+    memory: 128Gi
+  requests:
+    cpu: 12
+    memory: 64Gi
