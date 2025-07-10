@@ -24,3 +24,6 @@ resources:
   requests:
     cpu: 12
     memory: 64Gi
+
+borg:
+  expose: "default"

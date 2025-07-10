@@ -12,31 +12,31 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}
+        borg/expose: {{ .Values.borg.expose }}
+        borg/models: [{{ .Values.model.name }}]
     spec:
       containers:
         - name: vllm
           image: "{{ .Values.imageName }}:{{ .Values.imageVersion }}"
-          command: [ "/bin/bash", "-c", "--" ]
-          args: [ "while true; do sleep 30; done;" ]
-          # command:
-          #   - "python3"
-          #   - "-m"
-          #   - "vllm.entrypoints.openai.api_server"
-          # args:
-          # - "--model={{ .Values.model.path }}"
-          # {{- if .Values.model.name }}
-          # - "--model-name={{ .Values.model.name }}"
-          # {{- end }}
-          # {{- if gt (int .Values.gpu.count) 1 }}
-          # - "--tensor-parallel-size={{ .Values.gpu.count }}" 
-          # {{- end }}
-          # {{- if .Values.model.args }}
-          # {{- $json := .Values.model.args| b64dec }}
-          # {{- $argsList := $json | fromJsonArray }}
-          # {{- range $argsList }}
-          # - {{ . | quote }}
-          # {{- end }}
-          # {{- end }}
+          command:
+            - "python3"
+            - "-m"
+            - "vllm.entrypoints.openai.api_server"
+          args:
+          - "--model={{ .Values.model.path }}"
+          {{- if .Values.model.name }}
+          - "--model-name={{ .Values.model.name }}"
+          {{- end }}
+          {{- if gt (int .Values.gpu.count) 1 }}
+          - "--tensor-parallel-size={{ .Values.gpu.count }}" 
+          {{- end }}
+          {{- if .Values.model.args }}
+          {{- $json := .Values.model.args| b64dec }}
+          {{- $argsList := $json | fromJsonArray }}
+          {{- range $argsList }}
+          - {{ . | quote }}
+          {{- end }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8000
@@ -45,13 +45,13 @@ spec:
             limits:
               cpu: {{ .Values.resources.limits.cpu }}
               memory: {{ .Values.resources.limits.memory }}
-              {{- if gt .Values.gpu.count 0 }}
+              {{- if gt (int .Values.gpu.count) 0 }}
               {{ .Values.gpu.type }}: {{ .Values.gpu.count }}
               {{- end }}
             requests:
               cpu: {{ .Values.resources.requests.cpu }}
               memory: {{ .Values.resources.requests.memory }}
-              {{- if gt .Values.gpu.count 0 }}
+              {{- if gt (int .Values.gpu.count) 0 }}
               {{ .Values.gpu.type }}: {{ .Values.gpu.count }}
               {{- end }}
           volumeMounts:
@@ -68,7 +68,7 @@ spec:
           hostPath:
             path: /srv/huggingface
             type: DirectoryOrCreate
-      {{- if gt .Values.gpu.count 0 }}
+      {{- if gt (int .Values.gpu.count) 0 }}
       tolerations:
         - key: {{ .Values.gpu.type }}
           operator: Exists
