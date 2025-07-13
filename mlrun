@@ -5,13 +5,14 @@ VLLM Helm Deployment Manager
 A command-line tool for managing VLLM deployments using Helm charts.
 Supports installation, upgrades, uninstalls, and listing of deployments.
 """
-
+import os
 import sys
 import subprocess
 import argparse
 import json
 import base64
 import yaml
+import dotenv
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
@@ -263,22 +264,23 @@ Examples:
     
     subparsers = parser.add_subparsers(dest='command', required=True, help='Available commands')
     
-    DEFAULT_IMAGE="docker.io/vllm/vllm-openai:latest"
+    DEFAULT_IMAGE=os.getenv('MLRUN_DEFAULT_IMAGE', "docker.io/vllm/vllm-openai:latest")
+    DEFAULT_GPU_TYPE=os.getenv('DEFAULT_GPU_TYPE', "nvidia.com/gpu")
 
     # Common arguments for deployment commands
     def add_deployment_args(subparser):
         subparser.add_argument('-n', '--replicaCount', type=int, help='Number of replicas')
         subparser.add_argument('-g', '--gpuCount', type=int, help='Number of GPUs')
-        subparser.add_argument('--gpuType', default='amd.com/gpu', help='GPU type')
+        subparser.add_argument('--gpuType', default=DEFAULT_GPU_TYPE, help='GPU type')
         subparser.add_argument('--imageName', default=DEFAULT_IMAGE, help='Container image name')
         subparser.add_argument('--imageVersion', default='latest', help='Container image version')
         subparser.add_argument('--modelName', default='', help='Model name override')
         subparser.add_argument('--modelArgs', default='', help='Additional model arguments')
         subparser.add_argument('--sharedMemory', default='1Gi', help='Shared memory size')
-        subparser.add_argument('--cpuLimit', default='1', help='CPU limit')
-        subparser.add_argument('--memoryLimit', default='2Gi', help='Memory limit')
-        subparser.add_argument('--cpuRequest', default='2', help='CPU request')
-        subparser.add_argument('--memoryRequest', default='32Gi', help='Memory request')
+        subparser.add_argument('--cpuLimit', default=None, help='CPU limit')
+        subparser.add_argument('--memoryLimit', default='32Gi', help='Memory limit')
+        subparser.add_argument('--cpuRequest', default=None, help='CPU request')
+        subparser.add_argument('--memoryRequest', default='16Gi', help='Memory request')
     
     # Up command
     up_parser = subparsers.add_parser('up', help='Install a new deployment')
@@ -302,6 +304,8 @@ Examples:
 
 def main():
     """Main entry point"""
+    dotenv.load_dotenv()
+
     parser = setup_argument_parser()
     args, extra = parser.parse_known_args()
     
@@ -311,6 +315,12 @@ def main():
     
     helm = HelmManager(dry_run=args.dry_run, debug=args.debug)
     
+    if args.cpuRequest is None:
+        args.cpuRequest = args.gpuCount + 2
+
+    if args.cpuLimit is None:
+        args.cpuLimit = args.cpuRequest
+
     try:
         if args.command == 'up':
             config = create_config_from_args(args, extra)

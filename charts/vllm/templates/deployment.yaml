@@ -13,30 +13,35 @@ spec:
       labels:
         app: {{ .Release.Name }}
         borg/expose: {{ .Values.borg.expose }}
-        borg/models: [{{ .Values.model.name }}]
+      annotations:
+        borg/models: {{ .Values.model.name }}
     spec:
       containers:
         - name: vllm
           image: "{{ .Values.imageName }}:{{ .Values.imageVersion }}"
-          command:
+          args:
             - "python3"
             - "-m"
             - "vllm.entrypoints.openai.api_server"
-          args:
-          - "--model={{ .Values.model.path }}"
-          {{- if .Values.model.name }}
-          - "--model-name={{ .Values.model.name }}"
-          {{- end }}
-          {{- if gt (int .Values.gpu.count) 1 }}
-          - "--tensor-parallel-size={{ .Values.gpu.count }}" 
-          {{- end }}
-          {{- if .Values.model.args }}
-          {{- $json := .Values.model.args| b64dec }}
-          {{- $argsList := $json | fromJsonArray }}
-          {{- range $argsList }}
-          - {{ . | quote }}
-          {{- end }}
-          {{- end }}
+            - "--model={{ .Values.model.path }}"
+            {{- if .Values.model.name }}
+            - "--model-name={{ .Values.model.name }}"
+            {{- end }}
+            {{- if gt (int .Values.gpu.count) 1 }}
+            - "--tensor-parallel-size={{ .Values.gpu.count }}" 
+            {{- end }}
+            {{- if .Values.model.args }}
+            {{- $json := .Values.model.args| b64dec }}
+            {{- $argsList := $json | fromJsonArray }}
+            {{- range $argsList }}
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          env:
+            {{- if .Values.model.offline }}
+            - name: HF_HUB_OFFLINE
+              value: 1
+            {{- end }}
           ports:
             - name: http
               containerPort: 8000
@@ -58,7 +63,8 @@ spec:
             - name: shm
               mountPath: /dev/shm
             - name: huggingface-cache
-              mountPath: /root/.cache/huggingface
+              mountPath: {{ .Values.model.mountPath }}
+              readOnly: {{ .Values.model.readonly }}
       volumes:
         - name: shm
           emptyDir:
