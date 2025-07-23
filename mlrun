@@ -315,11 +315,9 @@ def main():
     
     helm = HelmManager(dry_run=args.dry_run, debug=args.debug)
     
-    if args.cpuRequest is None:
-        args.cpuRequest = args.gpuCount + 2
-
-    if args.cpuLimit is None:
-        args.cpuLimit = args.cpuRequest
+    args.gpuCount = getattr(args, 'gpuCount', 0)
+    args.cpuRequest = getattr(args, 'cpuRequest', args.gpuCount + 2)
+    args.cpuLimit = getattr(args, 'cpuLimit', args.cpuRequest)
 
     try:
         if args.command == 'up':
